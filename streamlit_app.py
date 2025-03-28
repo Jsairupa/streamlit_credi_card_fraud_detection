@@ -6,7 +6,7 @@ import seaborn as sns
 import time
 import plotly.express as px
 import plotly.graph_objects as go
-from sklearn.model_selection import train_test_split, GridSearchCV
+from sklearn.model_selection import train_test_split
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.preprocessing import StandardScaler, RobustScaler
 from sklearn.metrics import (
@@ -15,7 +15,15 @@ from sklearn.metrics import (
     precision_score, recall_score
 )
 from sklearn.decomposition import PCA
-from imblearn.over_sampling import SMOTE
+
+# Try to import SMOTE, but provide a fallback if it's not available
+try:
+    from imblearn.over_sampling import SMOTE
+    SMOTE_AVAILABLE = True
+except ImportError:
+    SMOTE_AVAILABLE = False
+    st.warning("The imblearn package is not installed. SMOTE functionality will be disabled.")
+
 import io
 import base64
 from datetime import datetime
@@ -108,7 +116,13 @@ with st.sidebar:
         ["Standard Scaler", "Robust Scaler", "No Scaling"]
     )
     
-    handle_imbalance = st.checkbox("Handle class imbalance with SMOTE", True)
+    # Only show SMOTE option if it's available
+    if SMOTE_AVAILABLE:
+        handle_imbalance = st.checkbox("Handle class imbalance with SMOTE", True)
+    else:
+        handle_imbalance = False
+        st.info("SMOTE is not available. Install 'imbalanced-learn' package to enable this feature.")
+    
     use_pca = st.checkbox("Apply PCA for dimensionality reduction", False)
     if use_pca:
         n_components = st.slider("Number of PCA components", 2, 20, 10, 1)
@@ -157,9 +171,13 @@ def load_data(file=None):
         # Make fraudulent transactions have slightly higher amounts on average
         amount[fraud_indices] = amount[fraud_indices] * 1.5
         
-        # Combine into dataframe
-        feature_names = [f"V{i}" for i in range(1, n_features-1)]
-        df = pd.DataFrame(X, columns=feature_names)
+        # Combine into dataframe - ensure feature_names matches the number of columns in X
+        feature_names = [f"V{i}" for i in range(1, n_features+1)]
+        
+        # Create DataFrame with the correct number of columns
+        df = pd.DataFrame(X, columns=feature_names[:n_features])
+        
+        # Add time, amount and class columns
         df['Time'] = time
         df['Amount'] = amount
         df['Class'] = y.astype(int)
@@ -195,8 +213,8 @@ def preprocess_data(df, scaling_method, handle_imbalance, use_pca=False, n_compo
     # Split data
     X_train, X_test, y_train, y_test = train_test_split(X_scaled, y, test_size=0.3, random_state=42, stratify=y)
     
-    # Handle class imbalance if selected
-    if handle_imbalance:
+    # Handle class imbalance if selected and SMOTE is available
+    if handle_imbalance and SMOTE_AVAILABLE:
         smote = SMOTE(random_state=42)
         X_train, y_train = smote.fit_resample(X_train, y_train)
     
@@ -381,7 +399,7 @@ def plot_feature_importance(model, feature_names, plot_style="Plotly", top_n=10)
     indices = np.argsort(importances)[::-1]
     
     # Get top N features
-    top_indices = indices[:top_n]
+    top_indices = indices[:min(top_n, len(feature_names))]
     top_importances = importances[top_indices]
     top_features = [feature_names[i] for i in top_indices]
     
@@ -396,7 +414,7 @@ def plot_feature_importance(model, feature_names, plot_style="Plotly", top_n=10)
         ))
         
         fig.update_layout(
-            title=f"Top {top_n} Feature Importance",
+            title=f"Top {len(top_features)} Feature Importance",
             xaxis_title="Importance",
             yaxis_title="Feature",
             height=400,
@@ -409,7 +427,7 @@ def plot_feature_importance(model, feature_names, plot_style="Plotly", top_n=10)
         ax.barh(top_features, top_importances, color="red", alpha=0.8)
         ax.set_xlabel("Importance")
         ax.set_ylabel("Feature")
-        ax.set_title(f"Top {top_n} Feature Importance")
+        ax.set_title(f"Top {len(top_features)} Feature Importance")
         ax.invert_yaxis()
         return fig
 
@@ -1271,183 +1289,6 @@ with tab4:
                 ax.legend()
                 
                 st.pyplot(fig)
-            
-            # Amount vs. Fraud Probability
-            st.markdown("### Amount vs. Fraud Probability")
-            
-            amounts = [t["Amount"] for t in transactions]
-            
-            if plot_style == "Plotly":
-                fig = px.scatter(
-                    x=amounts,
-                    y=fraud_probas,
-                    color=actual_labels,
-                    color_discrete_map={0: "#4CAF50", 1: "#F44336"},
-                    labels={"x": "Amount", "y": "Fraud Probability", "color": "Actual Class"},
-                    title="Amount vs. Fraud Probability"
-                )
-                
-                # Add threshold line
-                fig.add_hline(
-                    y=st.session_state.threshold,
-                    line_dash="dash",
-                    line_color="black",
-                    annotation_text=f"Threshold: {st.session_state.threshold}"
-                )
-                
-                st.plotly_chart(fig)
-            else:
-                fig, ax = plt.subplots(figsize=(10, 6))
-                
-                for label, color in zip([0, 1], ["#4CAF50", "#F44336"]):
-                    mask = np.array(actual_labels) == label
-                    ax.scatter(
-                        np.array(amounts)[mask],
-                        np.array(fraud_probas)[mask],
-                        alpha=0.7,
-                        color=color,
-                        label=f"{'Genuine' if label == 0 else 'Fraud'}"
-                    )
-                
-                ax.axhline(
-                    st.session_state.threshold,
-                    color="black",
-                    linestyle="--",
-                    label=f"Threshold: {st.session_state.threshold}"
-                )
-                
-                ax.set_xlabel("Amount")
-                ax.set_ylabel("Fraud Probability")
-                ax.set_title("Amount vs. Fraud Probability")
-                ax.legend()
-                
-                st.pyplot(fig)
-        
-        # Performance by amount range
-        st.markdown("### 💰 Performance by Amount Range")
-        
-        # Get test data predictions
-        if st.session_state.X_test is not None and st.session_state.y_test is not None:
-            y_proba = st.session_state.model.predict_proba(st.session_state.X_test)[:, 1]
-            y_pred = (y_proba >= st.session_state.threshold).astype(int)
-            
-            # Get original test data
-            if st.session_state.df is not None:
-                # Get indices of test data
-                if st.session_state.scaler is not None:
-                    # We need to reconstruct the test data with amounts
-                    # This is a simplification - in a real app, you'd track the indices
-                    test_amounts = np.random.exponential(scale=100, size=len(st.session_state.y_test))
-                else:
-                    # If no scaling, we can use the original amounts
-                    test_amounts = st.session_state.df["Amount"].values[-len(st.session_state.y_test):]
-                
-                # Create dataframe with predictions and amounts
-                performance_df = pd.DataFrame({
-                    "Amount": test_amounts,
-                    "Actual": st.session_state.y_test,
-                    "Predicted": y_pred,
-                    "Probability": y_proba
-                })
-                
-                # Define amount ranges
-                amount_ranges = [
-                    (0, 50),
-                    (50, 100),
-                    (100, 500),
-                    (500, 1000),
-                    (1000, float("inf"))
-                ]
-                
-                # Calculate performance by amount range
-                range_performance = []
-                
-                for min_amount, max_amount in amount_ranges:
-                    range_mask = (performance_df["Amount"] >= min_amount) & (performance_df["Amount"] < max_amount)
-                    range_df = performance_df[range_mask]
-                    
-                    if len(range_df) > 0:
-                        accuracy = accuracy_score(range_df["Actual"], range_df["Predicted"])
-                        precision = precision_score(range_df["Actual"], range_df["Predicted"], zero_division=0)
-                        recall = recall_score(range_df["Actual"], range_df["Predicted"], zero_division=0)
-                        f1 = f1_score(range_df["Actual"], range_df["Predicted"], zero_division=0)
-                        
-                        range_performance.append({
-                            "Range": f"${min_amount} - ${max_amount if max_amount != float('inf') else 'inf'}",
-                            "Count": len(range_df),
-                            "Accuracy": accuracy,
-                            "Precision": precision,
-                            "Recall": recall,
-                            "F1": f1
-                        })
-                
-                # Display performance by amount range
-                range_df = pd.DataFrame(range_performance)
-                
-                st.dataframe(range_df)
-                
-                # Plot performance by amount range
-                st.markdown("### Performance Metrics by Amount Range")
-                
-                if plot_style == "Plotly":
-                    fig = go.Figure()
-                    
-                    fig.add_trace(go.Bar(
-                        x=range_df["Range"],
-                        y=range_df["Accuracy"],
-                        name="Accuracy",
-                        marker_color="#4CAF50"
-                    ))
-                    
-                    fig.add_trace(go.Bar(
-                        x=range_df["Range"],
-                        y=range_df["Precision"],
-                        name="Precision",
-                        marker_color="#2196F3"
-                    ))
-                    
-                    fig.add_trace(go.Bar(
-                        x=range_df["Range"],
-                        y=range_df["Recall"],
-                        name="Recall",
-                        marker_color="#FF9800"
-                    ))
-                    
-                    fig.add_trace(go.Bar(
-                        x=range_df["Range"],
-                        y=range_df["F1"],
-                        name="F1 Score",
-                        marker_color="#9C27B0"
-                    ))
-                    
-                    fig.update_layout(
-                        title="Performance Metrics by Amount Range",
-                        xaxis_title="Amount Range",
-                        yaxis_title="Score",
-                        barmode="group"
-                    )
-                    
-                    st.plotly_chart(fig)
-                else:
-                    fig, ax = plt.subplots(figsize=(12, 6))
-                    
-                    x = np.arange(len(range_df))
-                    width = 0.2
-                    
-                    ax.bar(x - 1.5*width, range_df["Accuracy"], width, label="Accuracy", color="#4CAF50")
-                    ax.bar(x - 0.5*width, range_df["Precision"], width, label="Precision", color="#2196F3")
-                    ax.bar(x + 0.5*width, range_df["Recall"], width, label="Recall", color="#FF9800")
-                    ax.bar(x + 1.5*width, range_df["F1"], width, label="F1 Score", color="#9C27B0")
-                    
-                    ax.set_xlabel("Amount Range")
-                    ax.set_ylabel("Score")
-                    ax.set_title("Performance Metrics by Amount Range")
-                    ax.set_xticks(x)
-                    ax.set_xticklabels(range_df["Range"])
-                    ax.legend()
-                    
-                    plt.tight_layout()
-                    st.pyplot(fig)
 
 # Footer
 st.markdown("---")
